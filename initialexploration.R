@@ -204,3 +204,91 @@ ggplot(data = tree_sf) +
   coord_sf() +  # Ensures correct map projection
   theme_minimal() +
   ggtitle("San Francisco Street Trees - Green Dot Map")
+
+landtemp <- read.csv(file = here("edsc_collection_results_export.csv"), header = TRUE, sep = ",")
+
+
+#NOTE: Be aware that any reprojection of data from its source projection to a different projection will inherently change the data from its original format. All reprojections use GDAL's gdalwarp function in combination with the PROJ string listed above. For additional information, see the AρρEEARS help documentation .
+
+# Load necessary libraries
+library(terra)  # For working with raster data
+library(ggplot2)  # For plotting
+library(gridExtra)  # For arranging plots in a grid
+
+# File paths to your .tif files
+file1 <- "ECO_L2T_LSTE.002_LST_doy2024277191514_aid0001_10N.tif"
+file2 <- "ECO_L2T_LSTE.002_LST_doy2024278014456_aid0001_10N.tif"
+file3 <- "ECO_L2T_LSTE.002_LST_doy2024278182656_aid0001_10N.tif"
+file4 <- "ECO_L2T_LSTE.002_LST_doy2024281005904_aid0001_10N.tif"
+
+# Load the raster files
+rast1 <- rast(file1)
+rast2 <- rast(file2)
+rast3 <- rast(file3)
+rast4 <- rast(file4)
+
+# Convert raster files to data frames for ggplot
+rast_to_df <- function(rast) {
+  df <- as.data.frame(rast, xy = TRUE, na.rm = TRUE)  # Extract values and coordinates
+  colnames(df)[3] <- "value"  # Rename the raster value column to "value"
+  return(df)
+}
+
+#df1 <- rast_to_df(rast1)
+df2 <- rast_to_df(rast2)
+df3 <- rast_to_df(rast3)
+#df4 <- rast_to_df(rast4)
+
+# Define a plotting function
+plot_raster <- function(data, title) {
+  ggplot(data) +
+    geom_tile(aes(x = x, y = y, fill = value)) +
+    scale_fill_viridis_c(option = "plasma", name = "Temperature (K)") +
+    theme_minimal() +
+    coord_fixed() +
+    labs(title = title, x = "Longitude", y = "Latitude")
+}
+
+# Create individual plots
+#plot1 <- plot_raster(df1, "LST 1")
+plot2 <- plot_raster(df2, "LST 2")
+plot3 <- plot_raster(df3, "LST 3")
+#plot4 <- plot_raster(df4, "LST 4")
+
+# Arrange the plots in a 2x2 grid
+#grid.arrange(plot1, plot2, plot3, plot4, ncol = 2)
+grid.arrange(plot2, plot3, ncol = 2)
+
+# Load necessary libraries
+library(terra)
+library(ggplot2)
+library(viridis)
+
+# Read in the raster file
+rastTempe <- rast(here::here("lansat/LC08_L2SP_044034_20241007_20241018_02_T1_ST_B10.TIF"))
+
+# Convert raster files to data frames for ggplot
+rast_to_df <- function(rastTempe) {
+  df <- as.data.frame(rastTempe, xy = TRUE, na.rm = TRUE)  # Extract values and coordinates
+  colnames(df)[3] <- "value"  # Rename the raster value column to "value"
+  return(df)  # Ensure the data frame is returned
+}
+
+# Convert the raster to a data frame
+dfTempe <- rast_to_df(rastTempe)
+
+# Define a plotting function
+plot_raster <- function(data, title) {
+  ggplot(data) +
+    geom_tile(aes(x = x, y = y, fill = value)) +
+    scale_fill_viridis_c(option = "plasma", name = "Temperature (K)") +
+    theme_minimal() +
+    coord_fixed() +
+    labs(title = title, x = "Longitude", y = "Latitude")
+}
+
+# Create the plot with the correct data
+plotTempe <- plot_raster(dfTempe, "LST 2")
+plot(plotTempe)
+
+temp
