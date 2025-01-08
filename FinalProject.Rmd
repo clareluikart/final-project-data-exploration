@@ -9,11 +9,7 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
-
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+## Adding Libraries
 ```{r libraries}
 #libraries used
 library(here)
@@ -26,95 +22,10 @@ library(ggplot2)
 library(terra)
 library(tidycensus)
 library(raster)
+library(spdep)
 ```
-
-```{r setup_NDVI, eval = FALSE}
-# Step 1: Define input and output folders
-input_folder <- "laip/" # Replace with your folder path
-output_folder <- "laip/ndvi_output/" # Folder to save NDVI rasters
-
-# Create output folder if it doesn't exist
-if (!dir.exists(output_folder)) dir.create(output_folder)
-
-# Step 2: Load all TIFs
-tif_files <- list.files(input_folder, pattern = "\\.tif$", full.names = TRUE)
-
-# Step 3: Process each TIF to calculate NDVI and save
-for (tif_file in tif_files) {
-  cat("Processing:", tif_file, "\n")
-  
-  # Load the TIF
-  tif <- stack(tif_file)
-  
-  # Extract red and NIR bands (adjust band numbers if needed)
-  red_band <- tif[[1]]
-  nir_band <- tif[[4]]
-  
-  # Calculate NDVI
-  ndvi <- (nir_band - red_band) / (nir_band + red_band)
-  
-  # Define output file name
-  output_file <- gsub(".tif$", "_NDVI.tif", basename(tif_file))
-  output_path <- file.path(output_folder, output_file)
-  
-  # Save the NDVI raster
-  writeRaster(ndvi, output_path, format = "GTiff", overwrite = TRUE)
-  
-  cat("Saved NDVI raster to:", output_path, "\n")
-}
-
-# Step 4: List all NDVI rasters
-ndvi_files <- list.files(output_folder, pattern = "_NDVI\\.tif$", full.names = TRUE)
-
-# Step 5: Determine unified extent
-cat("Calculating unified extent...\n")
-xmin_all <- Inf
-xmax_all <- -Inf
-ymin_all <- Inf
-ymax_all <- -Inf
-
-for (ndvi_file in ndvi_files) {
-  r <- raster(ndvi_file)
-  raster_extent <- extent(r)
-  
-  xmin_all <- min(xmin_all, raster_extent[1])
-  xmax_all <- max(xmax_all, raster_extent[2])
-  ymin_all <- min(ymin_all, raster_extent[3])
-  ymax_all <- max(ymax_all, raster_extent[4])
-}
-
-# Create a unified extent
-unified_extent <- extent(xmin_all, xmax_all, ymin_all, ymax_all)
-cat("Unified extent is:\n")
-cat("xmin:", xmin_all, "xmax:", xmax_all, "ymin:", ymin_all, "ymax:", ymax_all, "\n")
-
-# Step 6: Create a reference raster
-reference_raster <- raster(unified_extent, crs = "+proj=utm +zone=10 +datum=NAD83 +units=m +no_defs")
-res(reference_raster) <- 1 # Set resolution to 1 meter
-
-# Step 7: Resample all NDVI rasters to the unified extent and resolution
-cat("Resampling rasters...\n")
-resampled_rasters <- lapply(ndvi_files, function(ndvi_file) {
-  r <- raster(ndvi_file)
-  r_resampled <- resample(r, reference_raster, method = "bilinear")
-  return(r_resampled)
-})
-
-# Step 8: Mosaic resampled NDVI rasters together
-cat("Mosaicking rasters...\n")
-mosaicked_raster_NDVI <- do.call(mosaic, c(resampled_rasters, fun = "mean"))
-
-# Step 9: Save the mosaicked NDVI raster
-mosaic_output_file_NDVI <- file.path("laip/ndvi_output", "mosaicked_raster_NDVI.tif")
-writeRaster(mosaicked_raster_NDVI, mosaic_output_file_NDVI, format = "GTiff", overwrite = TRUE)
-cat("Mosaicked NDVI raster saved to:", mosaic_output_file_NDVI, "\n")
-```
-
-
-```{r NDVI}
-ndvi <- raster("laip/ndvi_output/mosaicked_raster_NDVI.tif")
-plot(ndvi)
-```
+## Calculating NDVI
+### Creating total NDVI area
 ```{r setup_NDVI_25, eval = FALSE}
 # Step 1: Define input and output folders
 input_folder <- "laip/" # Replace with your folder path
@@ -150,6 +61,7 @@ for (tif_file in tif_files) {
   cat("Saved NDVI raster to:", output_path, "\n")
 }
 ```
+### Classifying NDVI
 ``` {r NDVI_classify, eval=FALSE}
 input_folder <- "laip/" # Replace with your folder path
 output_folder <- "laip/ndvi_output/" # Folder to save NDVI rasters
@@ -178,13 +90,13 @@ plot(mosaicked_raster_NDVI)
 writeRaster(mosaicked_raster_NDVI, "mosaicked_raster_060_NDVI.tif", overwrite = TRUE)
 cat("Mosaicked NDVI raster saved to:", mosaic_output_file_NDVI, "\n")
 ```
-
-
+### Plotting NDVI at .6 meter resolution (NAD83 / UTM zone 10N (EPSG:26910))
 ```{r NDVI_25}
 ndvi_25 <- rast("mosaicked_raster_060_NDVI.tif")
 plot(ndvi_25)
 ```
-
+## Calculating nDSM
+### Setting up DEM
 ```{r setup25DEM, eval=FALSE}
 # Define the folder containing the files
 input_folder <- "nDSM_stuff/ca2023_sanfran_dem_Job1102345/"
@@ -207,11 +119,12 @@ terra::writeRaster(new_raster, output_file, overwrite = TRUE)
 
 cat("Mosaic saved to", output_file, "\n")
 ```
+### Plotting DEM at .82-foot (.25 meter) resolution (NAD83(2011) / California zone 3 (ftUS) (EPSG:6420))
 ```{r import25DEM}
-dem_raster <- raster(here("mosaicked_dem_25.tif"))
+dem_raster <- rast("mosaicked_dem_25.tif")
 plot(dem_raster, main = "Digital Elevation Model (.25m Resolution)")
 ```
-
+### Setting up DSM
 ```{r setup_25DSM, eval = FALSE}
 # List all chunk files
 chunk_files <- list.files(path = "python_test/output_tifs/", pattern = "chunk_.*\\.tif$", full.names = TRUE)
@@ -223,16 +136,17 @@ new_raster <- do.call(terra::mosaic, c(rasters, fun = "mean"))
 # Save the final mosaic
 writeRaster(new_raster, "san_francisco_25_dsm.tif", overwrite = TRUE)
 ```
+### Plotting DSM at (.25 meter) resolution (WGS 84 / Pseudo-Mercator (EPSG:3857) )
 ```{r import_25DSM}
 dsm_raster <- rast("san_francisco_25_dsm.tif")
 plot(dsm_raster, main = "Digital Surface Model (.25m Resolution)")
 ```
-
+### Changing DEM vertical units from feet to metres
 ```{r metresDEM, eval=FALSE}
 writeRaster((raster(here("mosaicked_dem_25.tif"))*0.3048), "dem_metres.tif", overwrite = TRUE)
 ```
 
-
+### Subtracting DEM from DSM to get nDSM (WGS 84 / Pseudo-Mercator (EPSG:3857))
 ```{r setup25NDSM, eval=FALSE}
 terra_dem <- terra::rast("dem_metres.tif")
 
@@ -246,13 +160,13 @@ terra_dem <- terra::crop(terra_dem, terra_dsm, ext=TRUE)
 noaa_ndsm <- terra_dsm - terra_dem
 writeRaster(noaa_ndsm, "san_francisco_ndsm_25.tif", overwrite = TRUE)
 ```
+### Plotting nDSM at (.25 meter) resolution (WGS 84 / Pseudo-Mercator (EPSG:3857))
 ```{r import_NDSM_25}
 noaa_ndsm <- rast("san_francisco_ndsm_25.tif")
 plot(noaa_ndsm)
 ```
-
-
-```{r setup_treecover_25}
+### Reclassifying nDSM to find areas above 8 feet
+```{r classify_nDSM_25}
 feet_to_meters <- function(feet) feet * 0.3048
 threshold_1 <- feet_to_meters(1)   # 1 foot to meters
 threshold_8 <- feet_to_meters(8)   # 8 feet to meters
@@ -279,11 +193,12 @@ plot(reclassified_raster_25,
      axes = FALSE, box = FALSE)
 ```
 
+### Importing NDVI (NAD83 / UTM zone 10N (EPSG:26910)) and and Reclassified nDSM (WGS 84 / Pseudo-Mercator (EPSG:3857))
 ```{r import_NDVI_nDSM, eval=FALSE}
 mosaicked_raster_NDVI <- rast("mosaicked_raster_060_NDVI.tif")
 reclassified_raster_25 <- rast("reclassified_25.tif")
 ```
-
+### Calculating tree cover 
 ```{r setup_treecover_raster_25, eval=FALSE}
 mosaicked_raster_NDVI <- terra::project(mosaicked_raster_NDVI, reclassified_raster_25)
 
@@ -294,44 +209,38 @@ plot(tree_cover)
 
 writeRaster(tree_cover, "treecover_25.tif", overwrite = TRUE)
 ```
+### Plotting tree cover (WGS 84 / Pseudo-Mercator (EPSG:3857))
 ```{r import_tree_cover25}
 tree_cover <- rast("treecover_25.tif")
 plot(tree_cover, main = "Tree Cover, .25m resolution")
 ```
-
-```{r}
-# Load necessary libraries
-library(sf)
-
-# Define the coordinates in EPSG:4326 (WGS84)
-coords <- data.frame(
-  lon = c(-122.519531, -122.349243),
-  lat = c(37.694959, 37.835819)
-)
-
-# Create an sf object from the WGS84 coordinates
-sf_points <- st_as_sf(coords, 
-                      coords = c("lon", "lat"), 
-                      crs = 4326) # EPSG:4326 (WGS84)
-
-# Transform the coordinates to EPSG:6319 (NAD83 / California Albers)
-sf_points_6319 <- st_transform(sf_points, 6319)
-
-# Extract the transformed coordinates
-transformed_coords <- st_coordinates(sf_points_6319)
-
-# Print the transformed coordinates
-print(transformed_coords)
-```
-
+### Finding tree cover percent by area, using EPSG:3311 NAD83 / California Albers
 ```{r tree_cover_percent_setup, eval = FALSE}
+# Define the bounds and resolution
+xmin <- -221668.3543
+ymin <- -31750.9275
+xmax <- -206742.5916
+ymax <- -17587.9157
+resolution <- 0.25  # in meters
+
+# Create a SpatRaster with the defined bounds and resolution
+ncols <- round((xmax - xmin) / resolution)
+nrows <- round((ymax - ymin) / resolution)
+
+# Create the empty raster
+r <- rast(nrows = nrows, ncols = ncols, ext = ext(xmin, xmax, ymin, ymax), resolution = resolution)
+
+crs(r) <- "EPSG:3311"
+
 # Load the raster data
-raster_data <- rast("treecover_25.tif")
+raster_data <- terra::project(tree_cover, r)
+
+writeRaster(raster_data, "treecover_25_3311.tif", overwrite = TRUE)
 
 # Load the neighborhood shapefile
 neighborhoods <- st_read("cb_2020_06_bg_500k.shp")%>%
   filter(., COUNTYFP == "075")%>%
-  select(., AFFGEOID,GEOID, geometry)
+  dplyr::select(., AFFGEOID,GEOID, geometry)
 
 st_crs(neighborhoods) <- "EPSG:4326"
 
@@ -361,27 +270,28 @@ for (i in 1:nrow(neighborhoods)) {
 final_results <- do.call(rbind, results)
 
 tree_cover_values <- final_results%>%
-  select(., "neighborhood", "tree_cover_percentage.m_3712212_se_10_060_20220519_NDVI")%>%
-  rename(., "GEOID" = "neighborhood")%>%
-  rename(., "tree_cover_percentage" = "tree_cover_percentage.m_3712212_se_10_060_20220519_NDVI")%>%
-  filter(!is.na(tree_cover_percentage))
+  dplyr::select(., "neighborhood", "tree_cover_percentage.m_3712212_se_10_060_20220519_NDVI")%>%
+  dplyr::rename(., "GEOID" = "neighborhood")%>%
+  dplyr::rename(., "tree_cover_percentage" = "tree_cover_percentage.m_3712212_se_10_060_20220519_NDVI")%>%
+  dplyr::filter(!is.na(tree_cover_percentage))
 
 # Add the extracted values to the neighborhoods dataframe
 joined_values <- left_join(tree_cover_values, neighborhoods, by="GEOID")
 
 joined_values <-  joined_values%>%
-  select(., GEOID, AFFGEOID, tree_cover_percentage)
+  dplyr::select(., GEOID, AFFGEOID, tree_cover_percentage)
 
-write.csv(joined_values, "tree_cover.csv", row.names = FALSE)
+write.csv(joined_values, "tree_cover_2.csv", row.names = FALSE)
 ```
+### Plotting Urban Tree Canopy coverage by Census Block
 ```{r import_tree_cover_percent}
 # Load and prepare the data
-tree_cover_percent <- read.csv("tree_cover.csv") %>%
-  select(AFFGEOID, tree_cover_percentage)
+tree_cover_percent <- read.csv("tree_cover_2.csv") %>%
+  dplyr::select(AFFGEOID, tree_cover_percentage)
 
 neighborhoods <- st_read("cb_2020_06_bg_500k.shp") %>%
   filter(COUNTYFP == "075") %>%
-  select(AFFGEOID, GEOID, geometry)
+  dplyr::select(AFFGEOID, GEOID, geometry)
 
 # Ensure CRS is consistent
 st_crs(neighborhoods) <- "EPSG:4326"
@@ -404,7 +314,7 @@ neighborhoods <- st_difference(neighborhoods, exclude_areas)%>%
 
 # Plot the final map
 tmap_mode("plot")
-tm_shape(neighborhoods_cleaned) +
+tm_shape(neighborhoods) +
   tm_polygons("tree_cover_percentage", 
               palette = "Greens", 
               title = "Urban Tree Canopy Coverage, %",
@@ -412,13 +322,143 @@ tm_shape(neighborhoods_cleaned) +
               lwd = 0) +  # Remove borders around polygons
   tm_layout(frame = FALSE, bg.color = "darkgray")
 ```
-```{r calculate_total_percent}
-
-```
-```{r spatial_autocorrelation}
-
-```
-```{r correlation_with_race}
+```{r calculate_total_coverage}
 
 ```
 
+```{r spatial_autocorrelation_neighbors}
+treasure_island_extent <- st_bbox(c(xmin = -122.380388, ymin = 37.805822, xmax = -122.358244, ymax = 37.835112), crs = st_crs(neighborhoods))
+treasure_island <- st_as_sfc(treasure_island_extent)
+neighborhoods_autocorrelation <- st_difference(neighborhoods, treasure_island)
+
+coordsC <- neighborhoods_autocorrelation%>%
+  st_centroid()%>%
+  st_geometry()
+SFC_nb <- neighborhoods_autocorrelation%>%
+  poly2nb(., queen=T)
+summary(SFC_nb)
+#plot them
+plot(SFC_nb, st_geometry(coordsC), col="red")
+#add a map underneath
+plot(neighborhoods_autocorrelation$geometry, add=T)
+SFcensus.lw <- SFC_nb %>%
+  nb2mat(., style="C")
+#using row standardised here
+
+print(sum(SFcensus.lw))
+```
+```{r global_morans}
+SFcensus.lw <- SFC_nb %>%
+  nb2listw(., style="C")
+I_SFcensus_Global_UTC <- neighborhoods_autocorrelation %>%
+  pull(tree_cover_percentage) %>%
+  as.vector()%>%
+  moran.test(., SFcensus.lw)
+
+I_SFcensus_Global_UTC
+```
+```{r monte_carlo}
+# run a Monte Carlo simulation 599 times
+mc_model <- moran.mc(neighborhoods_autocorrelation$tree_cover_percentage, SFcensus.lw, nsim=599)
+
+# inspect
+mc_model
+```
+
+```{r local_morans}
+I_SFC_Local_UTC <- neighborhoods_autocorrelation %>%
+  pull(tree_cover_percentage) %>%
+  as.vector()%>%
+  localmoran(., SFcensus.lw, alternative = "greater")%>%
+  as_tibble()
+
+neighborhoods_autocorrelation <- neighborhoods_autocorrelation %>%
+  mutate(UTC_I =as.numeric(I_SFC_Local_UTC$Ii))%>%
+  mutate(UTC_Iz =as.numeric(I_SFC_Local_UTC$Z.Ii))%>%
+  mutate(UTC_p =as.numeric(I_SFC_Local_UTC$'Pr(z > E(Ii))'))
+
+breaks1<-c(-1000,-2.58,-1.96,-1.65,1.65,1.96,2.58,1000)
+library(RColorBrewer)
+MoranColours<- rev(brewer.pal(8, "RdGy"))
+tm_shape(neighborhoods_autocorrelation) +
+    tm_polygons("UTC_I",
+        style="fixed",
+        breaks=breaks1,
+        palette=MoranColours,
+        midpoint=NA,
+        title="Local Moran's I, Urban Tree Canopy Coverage")+
+  tm_layout(title = "San Francisco Census Blocks", 
+            legend.outside = TRUE) +
+  tm_scale_bar(position = c("right", "bottom")) +
+  tm_compass(type = "arrow", position = c("left", "top"))
+```
+```{r local_morans_significance}
+signif <- 0.1
+# centers the variable of interest around its mean
+neighborhoods_autocorrelation <- neighborhoods_autocorrelation %>%
+  mutate(mean_UTC = tree_cover_percentage- mean(tree_cover_percentage))%>%
+  mutate(mean_UTC = as.vector(mean_UTC))%>%
+  mutate(mean_UTCI= UTC_I - mean(UTC_I))%>%
+  mutate(quadrant = case_when(mean_UTC>0 & mean_UTCI >0 ~ 4,
+         mean_UTC<0 & mean_UTCI <0 ~ 1,
+         mean_UTC<0 & mean_UTCI >0 ~ 2,
+         mean_UTC>0 & mean_UTCI <0 ~ 3))%>%
+  mutate(quadrant=case_when(UTC_p > signif ~ 0, TRUE ~ quadrant))
+
+brks <- c(0,1,2,3,4,5)
+colors <- c("#f2f2f2", "#2c8399", "#8ddef2", "#F4A582", "#D6604D")
+
+# had help from chatgpt in formatting this
+tm_shape(neighborhoods_autocorrelation) +
+    tm_polygons("quadrant",
+        style="fixed",
+        breaks=brks,
+        labels = c("Insignificant P Value","Low UTCC with \nLow UTCC Neighbours","Low UTCC with \nHigh UTCC Neighbours","High UTCC with \nLow UTCC Neighbours","High UTCC with \nHigh UTCC Neighbours"),
+        palette=colors,
+        title="Centred UTCC and Moran's I",
+        legend.show = FALSE)+
+  tm_layout(legend.outside = TRUE, frame = FALSE, title= "Moran's I with Mean UTCC" 
+            )+
+  # Add text below the map
+  tm_credits(
+    "San Francisco",              # The text you want to display
+    position = c("right", "top"),  # Centered at the bottom
+    size = .75,                        # Adjust the size of the text
+  )+
+    tm_add_legend(
+    type = "symbol",  # Use symbols for legend items (color boxes)
+    labels = c(
+      "Insignificant P Value",
+      "Low UTC with \nLow UTC Neighbours",
+      "Low UTC with \nHigh UTC Neighbours",
+      "High UTC with \nLow UTC Neighbours",
+      "High UTC with \nHigh UTC Neighbours"
+    ),
+    col = colors,  # Set the color values for the legend items
+    shape = 15,    # Use filled squares (or other shapes if you prefer)
+    size = 2,    # Adjust size of the symbols (boxes)
+  ) +
+  tm_scale_bar(position = c("right", "bottom")) +
+  tm_compass(type = "arrow", position = c("left", "top"))
+```
+
+```{r adding_independent_variables}
+
+```
+
+
+```{r multivariable_linear_regression}
+
+```
+
+```{r spatial_lag_regression}
+
+```
+
+```{r spatial_error_regression}
+
+```
+
+```{r mgwr}
+
+```
