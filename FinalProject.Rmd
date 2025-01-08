@@ -185,109 +185,6 @@ ndvi_25 <- rast("mosaicked_raster_060_NDVI.tif")
 plot(ndvi_25)
 ```
 
-```{r setup_DEM, eval = FALSE}
-#remove
-# Define the folder containing the .tif files
-input_folder <- "nDSM_stuff/ca2023_sanfran_dem_Job1102345/"
-
-# List all the .tif files in the directory that match the pattern
-tif_files <- list.files(input_folder, pattern = "ca2023_sanfran_dem_J1102345_\\d{3}_\\d{3}.tif$", full.names = TRUE)
-
-for (tif_file in tif_files) {
-  # Load the current .tif file
-  current_raster <- raster(tif_file)
-  
-  # Define the target resolution (1 meter)
-  target_resolution <- 1
-  
-  # Create a template raster with the target resolution
-  target_raster <- raster(current_raster)
-  res(target_raster) <- target_resolution
-  
-  # Resample to 1-meter resolution using bilinear interpolation
-  resampled_raster <- resample(current_raster, target_raster, method = "bilinear")
-  
-  # Define the output file name (same name but with a '_1m' suffix)
-  output_file <- gsub(".tif$", "_1m.tif", basename(tif_file))
-  output_path <- file.path(input_folder, output_file)
-  
-  # Save the resampled raster
-  writeRaster(resampled_raster, output_path, format = "GTiff", overwrite = TRUE)
-  
-  # Print a message to show progress
-  cat("Resampled and saved:", output_file, "\n")
-}
-
-# Print completion message
-cat("All TIFF files have been resampled to 1-meter resolution.")
-
-
-#### This is the correct nDSM
-# Define the folder containing the resampled .tif files
-input_folder <- "nDSM_stuff/ca2023_sanfran_dem_Job1102345/"
-
-# List all the resampled .tif files in the directory that match the pattern
-tif_files_1m <- list.files(input_folder, pattern = "ca2023_sanfran_dem_J1102345_\\d{3}_\\d{3}_1m.tif$", full.names = TRUE)
-
-# Load all the rasters into a list
-rasters_list <- lapply(tif_files_1m, raster)
-
-# Initialize variables to store min and max values
-xmin_all <- Inf
-xmax_all <- -Inf
-ymin_all <- Inf
-ymax_all <- -Inf
-
-# Loop through each raster and update the extent values
-for (tif_file in tif_files) {
-  r <- raster(tif_file)
-  raster_extent <- extent(r)
-  
-  # Update the minimum and maximum values
-  xmin_all <- min(xmin_all, raster_extent[1])
-  xmax_all <- max(xmax_all, raster_extent[2])
-  ymin_all <- min(ymin_all, raster_extent[3])
-  ymax_all <- max(ymax_all, raster_extent[4])
-}
-
-# Create a unified extent based on the min and max values
-unified_extent <- extent(xmin_all, xmax_all, ymin_all, ymax_all)
-
-# Print the unified extent
-cat("Unified extent is:\n")
-cat("xmin:", xmin_all, "xmax:", xmax_all, "ymin:", ymin_all, "ymax:", ymax_all, "\n")
-
-# Create a reference raster with the unified extent
-reference_raster <- raster(unified_extent, crs = "+proj=lcc +lat_0=36.5 +lon_0=-120.5 +lat_1=38.4333333333333 +lat_2=37.0666666666667 +x_0=2000000.0001016 +y_0=500000.0001016 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=us-ft +no_defs")
-
-# Set the resolution of the reference raster (1 meter resolution)
-res(reference_raster) <- 1  # Set resolution to 1 meter
-
-# Loop through each raster file and resample it to the unified extent and 1m resolution
-rasters_list <- lapply(tif_files_1m, function(tif_file) {
-  r <- raster(tif_file)
-  # Resample the raster to the unified extent and resolution
-  r_resampled <- resample(r, reference_raster, method = "bilinear")
-  return(r_resampled)
-})
-
-# Mosaic the resampled rasters together
-mosaicked_raster <- do.call(mosaic, c(rasters_list, fun = "mean"))
-
-# Save the mosaicked raster
-mosaic_output_file <- file.path(input_folder, "mosaicked_raster_1m.tif")
-writeRaster(mosaicked_raster, mosaic_output_file, format = "GTiff", overwrite = TRUE)
-
-# Print a message indicating success
-cat("Mosaic completed and saved as", mosaic_output_file, "\n")
-```
-
-```{r DEM}
-#remove
-mosaicked_raster <- raster(here("nDSM_stuff/ca2023_sanfran_dem_Job1102345/mosaicked_raster_1m.tif"))
-plot(mosaicked_raster)
-```
-
 ```{r setup25DEM, eval=FALSE}
 # Define the folder containing the files
 input_folder <- "nDSM_stuff/ca2023_sanfran_dem_Job1102345/"
@@ -315,24 +212,6 @@ dem_raster <- raster(here("mosaicked_dem_25.tif"))
 plot(dem_raster, main = "Digital Elevation Model (.25m Resolution)")
 ```
 
-```{r setup_DSM, eval = FALSE}
-#remove
-# List all chunk files
-chunk_files <- list.files(path = "python_test/output_tifs/", pattern = "chunk_.*\\.tif$", full.names = TRUE)
-
-# Load and mosaic the rasters
-rasters <- lapply(chunk_files, rast)
-new_raster <- do.call(terra::mosaic, c(rasters, fun = "mean"))
-
-# Save the final mosaic
-writeRaster(new_raster, "san_francisco_dsm.tif", overwrite = TRUE)
-```
-
-```{r DSM}
-#remove
-dsm_raster <- raster(here("san_francisco_dsm.tif"))
-plot(dsm_raster, main = "Digital Surface Model (1m Resolution)")
-```
 ```{r setup_25DSM, eval = FALSE}
 # List all chunk files
 chunk_files <- list.files(path = "python_test/output_tifs/", pattern = "chunk_.*\\.tif$", full.names = TRUE)
@@ -347,28 +226,6 @@ writeRaster(new_raster, "san_francisco_25_dsm.tif", overwrite = TRUE)
 ```{r import_25DSM}
 dsm_raster <- rast("san_francisco_25_dsm.tif")
 plot(dsm_raster, main = "Digital Surface Model (.25m Resolution)")
-```
-
-```{r setup_nDSM_1m, eval = FALSE}
-#remove
-projected_mosaicked_raster <- projectRaster(mosaicked_raster, crs = raster::crs(dsm_raster), res=1)
-
-projected_mosaicked_raster <- projected_mosaicked_raster * 0.3048 #changing it to feet
-
-projected_mosaicked_raster_test <- crop(projected_mosaicked_raster, extent(dsm_raster))
-dsm_raster_test <- crop(dsm_raster, extent(projected_mosaicked_raster_test))
-
-noaa_aligned_dsm_raster <- setExtent(dsm_raster_test, projected_mosaicked_raster_test, keepres = TRUE)
-
-noaa_ndsm <- noaa_aligned_dsm_raster - projected_mosaicked_raster_test
-
-writeRaster(noaa_ndsm, "san_francisco_ndsm.tif", overwrite = TRUE)
-```
-
-```{r nDSM1m, eval=FALSE}
-#remove
-noaa_ndsm <- raster(here("san_francisco_ndsm.tif"))
-plot(noaa_ndsm)
 ```
 
 ```{r metresDEM, eval=FALSE}
@@ -441,62 +298,6 @@ writeRaster(tree_cover, "treecover_25.tif", overwrite = TRUE)
 tree_cover <- rast("treecover_25.tif")
 plot(tree_cover, main = "Tree Cover, .25m resolution")
 ```
-
-```{r temperature}
-#remove
-coords <- list(
-  Polygons(
-    list(
-      Polygon(matrix(c(
-        542713, 4173544,
-        556664, 4173544,
-        556664, 4187505,
-        542713, 4187505,
-        542713, 4173544  # Close the polygon
-      ), ncol = 2, byrow = TRUE))
-    ), "1")
-)
-
-# Create the SpatialPolygons object
-holes_sp <- SpatialPolygons(
-  coords,
-  proj4string = CRS("+proj=utm +zone=10 +datum=WGS84 +units=m +no_defs")
-)
-
-# Read in the temperature raster (ensure that the file path is correct)
-tempJuly <- raster(here::here("lansatJuly/LC08_L2SP_044034_20240703_20240711_02_T1_ST_B10.TIF"))
-# we are using the extent cropping the US raster down to California  
-sf_cropped_July <- crop(tempJuly, sf_extent)
-# we are now masking the grids to the boundary of california
-sf_masked <- mask(sf_cropped, holes_sp)
-
-
-#### This is getting Lansat for July
-#https://d9-wret.s3.us-west-2.amazonaws.com/assets/palladium/production/s3fs-public/media/files/LSDS-1619_Landsat-8-9-C2-L2-ScienceProductGuide-v4.pdf
-# DATE_ACQUIRED = 2024-07-03
-# SCENE_CENTER_TIME = "18:45:23.1096400Z" sunset at 8:30
-sf_cropped_celsius_July <- (sf_cropped_July * 0.00341802)+-124.15
-sf_cropped_celsius_July_masked<- mask(sf_cropped_celsius_July, san_fran_sf_mask)
-# scale factor is found here: https://www.usgs.gov/faqs/how-do-i-use-a-scale-factor-landsat-level-2-science-products
-tm_shape(sf_cropped_celsius_July_masked) + tm_raster(style = "cont", title = "Surface temperature July 3, C", palette= "-Spectral")
-
-#https://geodata.lib.berkeley.edu/catalog/berkeley-s7s68p
-san_fran_sf_neighborhoods <- read_sf("sf_neighborhoods/SanFrancisco_neighborhoods_2013.shp")
-
-sf_average <- (sf_cropped_celsius_July + sf_cropped_celsius)/2
-san_fran_sf_mask <- san_fran_sf_neighborhoods%>%
-  st_union(.)%>%
-  st_transform(., crs="+proj=utm +zone=10 +datum=WGS84 +units=m +no_defs")%>%
-  as(., "Spatial") #maybe problem with 2 small holes in mask
-sf_average_masked <- mask(sf_average, san_fran_sf_mask)
-tm_shape(sf_average_masked) + tm_raster(style = "cont", title = "Surface temperature, C", palette= "-Spectral")+
-  tm_shape(san_fran_sf_neighborhoods)+tm_polygons(alpha = 0, border.col = "black")
-```
-```{r downsample_temperature}
-#remove
-temperature_resampled <- resample(sf_cropped_July, ndvi, method = "bilinear")
-```
-
 
 ```{r}
 # Load necessary libraries
@@ -574,20 +375,42 @@ joined_values <-  joined_values%>%
 write.csv(joined_values, "tree_cover.csv", row.names = FALSE)
 ```
 ```{r import_tree_cover_percent}
-tree_cover_percent <- read.csv("tree_cover.csv")
+# Load and prepare the data
+tree_cover_percent <- read.csv("tree_cover.csv") %>%
+  select(AFFGEOID, tree_cover_percentage)
 
+neighborhoods <- st_read("cb_2020_06_bg_500k.shp") %>%
+  filter(COUNTYFP == "075") %>%
+  select(AFFGEOID, GEOID, geometry)
 
+# Ensure CRS is consistent
+st_crs(neighborhoods) <- "EPSG:4326"
 
+# Define extents for Alameda and Alcatraz
+alameda_extent <- st_bbox(c(xmin = -122.337094, ymin = 37.775902, xmax = -122.318329, ymax = 37.799330), crs = st_crs(neighborhoods))
+alcatraz_extent <- st_bbox(c(xmin = -122.427263, ymin = 37.824158, xmax = -122.418337, ymax = 37.830463), crs = st_crs(neighborhoods))
+
+# Convert extents to sf polygons
+alameda_polygon <- st_as_sfc(alameda_extent)
+alcatraz_polygon <- st_as_sfc(alcatraz_extent)
+
+# Combine polygons to create exclusion areas
+exclude_areas <- st_union(alameda_polygon, alcatraz_polygon)
+
+# Subtract exclusion areas from neighborhoods
+neighborhoods <- st_difference(neighborhoods, exclude_areas)%>%
+  left_join(., tree_cover_percent, by = "AFFGEOID") %>%
+  filter(!is.na(tree_cover_percentage))
+
+# Plot the final map
 tmap_mode("plot")
-tm_shape(tree_cover_percent) +
+tm_shape(neighborhoods_cleaned) +
   tm_polygons("tree_cover_percentage", 
-              palette = "Greens",  # Adjust palette as needed
-              title = "Tree Cover (%)",
-              style = "cont")+  # Adjust style as needed
-  tm_layout(frame = FALSE)
-tm_shape(joined_values) +
-  tm_polygons("tree_cover_percentage", palette = "Greens", title = "Tree Cover (%)") +
-  tm_layout(legend.title.size = 1.5, frame = FALSE)
+              palette = "Greens", 
+              title = "Urban Tree Canopy Coverage, %",
+              style = "cont", 
+              lwd = 0) +  # Remove borders around polygons
+  tm_layout(frame = FALSE, bg.color = "darkgray")
 ```
 ```{r calculate_total_percent}
 
