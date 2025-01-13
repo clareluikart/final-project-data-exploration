@@ -23,6 +23,10 @@ library(terra)
 library(tidycensus)
 library(raster)
 library(spdep)
+library(e1071)
+library(spatialreg)
+library(spgwr)
+library(car)
 ```
 ## Calculating NDVI
 ### Creating total NDVI area
@@ -212,7 +216,42 @@ writeRaster(tree_cover, "treecover_25.tif", overwrite = TRUE)
 ### Plotting tree cover (WGS 84 / Pseudo-Mercator (EPSG:3857))
 ```{r import_tree_cover25}
 tree_cover <- rast("treecover_25.tif")
-plot(tree_cover, main = "Tree Cover, .25m resolution")
+san_fran_sf <- read_sf("sf/sfoutline.shp")%>%
+  st_transform(crs = crs(tree_cover))
+
+# Create a bounding box around the entire raster to reverse the mask
+bounding_box <- st_as_sfc(st_bbox(tree_cover))
+
+# Subtract San Francisco outline from the bounding box to create the inverted mask
+reverse_mask <- st_difference(bounding_box, st_union(san_fran_sf))
+
+# Mask the raster to keep only San Francisco
+tree_cover_cropped <- mask(tree_cover, vect(reverse_mask), inverse = TRUE)
+tree_cover_cropped <- crop(tree_cover_cropped, vect(san_fran_sf))
+
+# Reclassify the raster: NA and 0 to gray, 1 to green
+reclassified_matrix <- matrix(c(NA, NA, 0, 0, 0, 1, 1, 2), ncol = 2, byrow = TRUE)
+tree_cover_reclassified <- classify(tree_cover_cropped, reclassified_matrix, right = NA)
+
+# Convert to factor for proper tmap coloring
+tree_cover_factor <- as.factor(tree_cover_reclassified)
+
+# Set tmap mode to plot
+tmap_mode("plot")
+
+# Plot the map with tmap
+tm= tm_shape(tree_cover_factor) +
+  tm_raster(style = "cat", palette = c("lightgray", "darkgreen"), labels = c("No Trees", "Trees"), legend.show = FALSE) +
+  tm_layout(legend.outside = TRUE, frame = FALSE, title= "San Francisco Urban Tree Canopy, 2022/2023" 
+            )+
+  tm_shape(san_fran_sf) +
+  tm_borders(lwd = 1, col = "darkgray") +
+  tm_shape(san_fran_sf)+
+  tm_fill("white")+
+  tm_scale_bar() +
+  tm_compass(position = c("left", "top"))
+
+tmap_save(tm, "urban_tree_canopy.png")
 ```
 ### Finding tree cover percent by area, using EPSG:3311 NAD83 / California Albers
 ```{r tree_cover_percent_setup, eval = FALSE}
@@ -312,16 +351,31 @@ neighborhoods <- st_difference(neighborhoods, exclude_areas)%>%
   left_join(., tree_cover_percent, by = "AFFGEOID") %>%
   filter(!is.na(tree_cover_percentage))
 
-# Plot the final map
+label_data <- data.frame(
+  name = c("Presidio of San Francisco", "Treasure \nIsland", "Golden Gate Park", "Twin Peaks", "Lake Merced Park", "Glen Canyon Park", "Union Square", "Financial District"),
+  lon = c(-122.4727, -122.3708, -122.4862, -122.4477, -122.4934, -122.4520, -122.4074, -122.4014),
+  lat = c(37.7989, 37.8165, 37.7694, 37.7544, 37.7285, 37.7386, 37.7879, 37.7946)
+)
+
+# Convert label_data to an sf object
+label_sf <- st_as_sf(label_data, coords = c("lon", "lat"), crs = 4326)
+
 tmap_mode("plot")
-tm_shape(neighborhoods) +
+tm=tm_shape(neighborhoods) +
   tm_polygons("tree_cover_percentage", 
               palette = "Greens", 
-              title = "Urban Tree Canopy Coverage, %",
+              title = "Urban Tree Canopy \nCoverage by Census \nBlock Group, %",
               style = "cont", 
               lwd = 0) +  # Remove borders around polygons
-  tm_layout(frame = FALSE, bg.color = "darkgray")
+  tm_shape(label_sf) +
+  tm_layout(legend.outside = TRUE, frame = FALSE)+
+  tm_text("name", size = 0.8, col = "black") +  # Adjust size and color of labels as needed
+  tm_layout(frame = TRUE, bg.color = "lightgray")+
+  tm_scale_bar() +
+  tm_compass(position = c("left", "top"))
+tmap_save(tm, "percent_coverage.png")
 ```
+
 ```{r calculate_total_coverage}
 
 ```
@@ -392,6 +446,7 @@ tm_shape(neighborhoods_autocorrelation) +
   tm_scale_bar(position = c("right", "bottom")) +
   tm_compass(type = "arrow", position = c("left", "top"))
 ```
+
 ```{r local_morans_significance}
 signif <- 0.1
 # centers the variable of interest around its mean
@@ -409,7 +464,7 @@ brks <- c(0,1,2,3,4,5)
 colors <- c("#f2f2f2", "#2c8399", "#8ddef2", "#F4A582", "#D6604D")
 
 # had help from chatgpt in formatting this
-tm_shape(neighborhoods_autocorrelation) +
+tm = tm_shape(neighborhoods_autocorrelation) +
     tm_polygons("quadrant",
         style="fixed",
         breaks=brks,
@@ -417,14 +472,9 @@ tm_shape(neighborhoods_autocorrelation) +
         palette=colors,
         title="Centred UTCC and Moran's I",
         legend.show = FALSE)+
-  tm_layout(legend.outside = TRUE, frame = FALSE, title= "Moran's I with Mean UTCC" 
+  tm_layout(legend.outside = TRUE, frame = FALSE, title= "Local Moran's I \nwith Mean UTCC" 
             )+
   # Add text below the map
-  tm_credits(
-    "San Francisco",              # The text you want to display
-    position = c("right", "top"),  # Centered at the bottom
-    size = .75,                        # Adjust the size of the text
-  )+
     tm_add_legend(
     type = "symbol",  # Use symbols for legend items (color boxes)
     labels = c(
@@ -440,25 +490,540 @@ tm_shape(neighborhoods_autocorrelation) +
   ) +
   tm_scale_bar(position = c("right", "bottom")) +
   tm_compass(type = "arrow", position = c("left", "top"))
+tmap_save(tm, "LISA_map.png")
 ```
 
 ```{r adding_independent_variables}
+population <- read.csv("census_data/Population/DECENNIALDHC2020.P1-Data.csv", skip = 1)%>%
+  clean_names(.)%>%
+  select(., "geography", "x_total")%>%
+  rename(., "GEOID" = "geography", "total_population" = "x_total")%>%
+  mutate(GEOID = substr(GEOID, 10, nchar(GEOID) - 3))%>%
+  group_by(GEOID) %>%
+  summarize(across(everything(), sum, na.rm = TRUE))
 
+
+race <- read.csv("census_data/Race/DECENNIALDHC2020.P3-Data.csv", skip = 1)%>%
+  clean_names(.)%>%
+  select(., "geography", "x_total", "x_total_white_alone", "x_total_black_or_african_american_alone", "x_total_american_indian_and_alaska_native_alone", "x_total_asian_alone", "x_total_native_hawaiian_and_other_pacific_islander_alone", "x_total_two_or_more_races")%>%
+  rename(., "GEOID" = "geography", "total" = "x_total", "White" = "x_total_white_alone", "Black" = "x_total_black_or_african_american_alone", "Native" = "x_total_american_indian_and_alaska_native_alone", "Asian" = "x_total_asian_alone", "Pacific_Islander" = "x_total_native_hawaiian_and_other_pacific_islander_alone", "Multiple" = "x_total_two_or_more_races")%>%
+  mutate(GEOID = substr(GEOID, 10, nchar(GEOID) - 3))%>%
+  group_by(GEOID) %>%
+  summarize(across(everything(), sum, na.rm = TRUE))%>%
+  mutate(., White = White/total)%>%
+  mutate(., Black = Black/total)%>%
+  mutate(., Native = Native/total)%>%
+  mutate(., AAPI = (Asian + Pacific_Islander)/total)%>%
+  mutate(., Multiple = Multiple/total)%>%
+  select(., GEOID, White, Black, Native, AAPI, Multiple)%>%
+  mutate_all(~replace(., is.na(.), 0))
+
+rental <- read.csv("census_data/RentStatus/DECENNIALDHC2020.H4-Data.csv", skip = 1)%>%
+  clean_names(.)%>%
+  select(., geography, x_total, x_total_owned_with_a_mortgage_or_a_loan, x_total_owned_free_and_clear, x_total_renter_occupied)%>%
+  rename(., "GEOID" = "geography", "total" = "x_total", "mortgage" = "x_total_owned_with_a_mortgage_or_a_loan", "clear" = "x_total_owned_free_and_clear", "rent" = "x_total_renter_occupied")%>%
+  mutate(GEOID = substr(GEOID, 10, nchar(GEOID) - 3))%>%
+  group_by(GEOID) %>%
+  summarize(across(everything(), sum, na.rm = TRUE))%>%
+  mutate(., owned = (mortgage+clear)/total)%>%
+  mutate(., rented = rent/total)%>%
+  select(., GEOID, owned, rented)%>%
+  mutate_all(~replace(., is.na(.), 0))
+
+
+neighborhoods_data <- neighborhoods%>%
+  st_transform(., "EPSG:3311")%>%
+  left_join(., population, "GEOID")%>%
+  mutate(., area = st_area(geometry))%>%
+  mutate(., pop_density = total_population/area)%>%
+  mutate_all(~replace(., is.na(.), 0))%>%
+  select(GEOID, tree_cover_percentage, pop_density, geometry)%>%
+  left_join(., race, "GEOID")%>%
+  left_join(., rental, "GEOID")
+  
 ```
 
+```{r check_skewness}
+data <- neighborhoods_data$tree_cover_percentage
 
+# Calculate skewness
+skewness_value <- skewness(data)
+cat("The skewness of Tree Cover Percentage is:", round(skewness_value, 2), "\n")
+
+data <- neighborhoods_data$pop_density
+
+# Calculate skewness
+skewness_value <- skewness(data)
+cat("The skewness of population density is:", round(skewness_value, 2), "\n")
+
+data <- neighborhoods_data$White
+
+# Calculate skewness
+skewness_value <- skewness(data)
+cat("The skewness of percentage white is:", round(skewness_value, 2), "\n")
+
+data <- neighborhoods_data$Black
+
+# Calculate skewness
+skewness_value <- skewness(data)
+cat("The skewness of percentage Black is:", round(skewness_value, 2), "\n")
+
+data <- neighborhoods_data$Native
+
+# Calculate skewness
+skewness_value <- skewness(data)
+cat("The skewness of percentage native is:", round(skewness_value, 2), "\n")
+
+data <- neighborhoods_data$AAPI
+
+# Calculate skewness
+skewness_value <- skewness(data)
+cat("The skewness of percentage AAPI is:", round(skewness_value, 2), "\n")
+
+data <- neighborhoods_data$Multiple
+
+# Calculate skewness
+skewness_value <- skewness(data)
+cat("The skewness of percentage multiple races is:", round(skewness_value, 2), "\n")
+
+data <- neighborhoods_data$owned
+
+# Calculate skewness
+skewness_value <- skewness(data)
+cat("The skewness of percentage owning their own homes is:", round(skewness_value, 2), "\n")
+
+data <- neighborhoods_data$rented
+
+# Calculate skewness
+skewness_value <- skewness(data)
+cat("The skewness of percentage renting their homes is:", round(skewness_value, 2), "\n")
+```
 ```{r multivariable_linear_regression}
+library(units)
+neighborhoods_data_for_log <- neighborhoods_data %>%
+  mutate(across(where(~ inherits(., "units")), ~ drop_units(.))) %>%
+  mutate(across(where(is.numeric), ~ . + 0.05))%>%
+  mutate_all(~replace(., is.na(.), 0))
 
+treasure_island_extent <- st_bbox(c(xmin = -122.380388, ymin = 37.805822, xmax = -122.358244, ymax = 37.835112), crs = "EPSG:4326")%>%
+  st_transform(., st_crs(neighborhoods_data_for_log))
+treasure_island <- st_as_sfc(treasure_island_extent)
+neighborhoods_data_for_log <- st_difference(neighborhoods_data_for_log, treasure_island)
+# lm() function builds a regression model and stores model output into the object 'modelMLR'
+modelMLR <- lm(log10(tree_cover_percentage) ~ log10(pop_density) + log10(White) + log10(Black) + log10(Native) + log10(AAPI) + log10(Multiple) + log10(owned), data = neighborhoods_data_for_log)
+# Include the 'scipen=7' argument in the summary() function remove those annoying scientific notation!
+options(scipen = 7)
+# summary() calls report the output stored in object 'modelMLR'
+summary(modelMLR)
+
+vif(modelMLR)
+```
+```{r}
+# Extract residuals from "modelLMR" object and dump into "spatialdatafile" and call the column "RESIDUALS"
+neighborhoods_data_for_log$RESIDUALS <- modelMLR$residuals
+
+# Reporting basic summary measures to have an idea of its distribution before plotting them on map
+summary(neighborhoods_data_for_log$RESIDUALS)
+
+tm_shape(neighborhoods_data_for_log) + tm_fill("RESIDUALS", style = "cont", midpoint = 0, palette = "-RdBu") +
+tm_shape(neighborhoods_data_for_log) + tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+tm_compass(position = c("right", "top")) +
+tm_scale_bar(position = c("left", "bottom")) +
+tm_layout(frame = FALSE, legend.title.size = 0.5, legend.text.size = 0.5)
+```
+```{r}
+# Create spatial weights matrix for areas
+Weights <- poly2nb(neighborhoods_data_for_log, row.names = neighborhoods_data_for_log$GEOID)
+WeightsMatrix <- nb2mat(Weights, style='B')
+Residual_WeightMatrix <- mat2listw(WeightsMatrix , style='W')
+# Run the test on the regression model output object "modelMLR" using lm.morantest()
+lm.morantest(modelMLR, Residual_WeightMatrix, alternative="two.sided")
 ```
 
 ```{r spatial_lag_regression}
+# Fit model using lagsarlm()
+# reuse spatial weight matrix created earlier as an object called "Residual_WeighMatrix" 
+modelSLY <- lagsarlm(log10(tree_cover_percentage) ~ log10(pop_density) + log10(White) + log10(Black) + log10(Native) + log10(AAPI) + log10(Multiple) + log10(owned), data = neighborhoods_data_for_log, Residual_WeightMatrix)
 
+summary(modelSLY)
+
+# extract the residuals for modelSLY object and dump back to original sf spatialdatafile object
+neighborhoods_data_for_log$RESID_SLY <- modelSLY$residuals
+# use Moran's I test using moran.mc() function
+moran.mc(neighborhoods_data_for_log$RESID_SLY, Residual_WeightMatrix, 1000, zero.policy = T)
+
+tm_shape(neighborhoods_data_for_log) + tm_fill("RESID_SLY", style = "cont", midpoint = 0, palette = "-RdBu") +
+tm_shape(neighborhoods_data_for_log) + tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+tm_compass(position = c("right", "top")) +
+tm_scale_bar(position = c("left", "bottom")) +
+tm_layout(frame = FALSE, legend.title.size = 0.5, legend.text.size = 0.5)
+
+Weights_2.0 <- as(Residual_WeightMatrix, "CsparseMatrix")
+trMC <- trW(Weights_2.0, type="MC")
+summary(impacts(modelSLY, tr = trMC, R=100), zstats=TRUE)
 ```
 
 ```{r spatial_error_regression}
+modelSER <- errorsarlm(log10(tree_cover_percentage) ~ log10(pop_density) + log10(White) + log10(Black) + log10(Native) + log10(AAPI) + log10(Multiple) + log10(owned), data = neighborhoods_data_for_log, Residual_WeightMatrix)
 
+summary(modelSER)
+
+# extract the residuals for modelSLY object and dump back to original sf spatialdatafile object
+neighborhoods_data_for_log$RESID_SER <- modelSER$residuals
+# use Moran's I test using moran.mc() function
+moran.mc(neighborhoods_data_for_log$RESID_SER, Residual_WeightMatrix, 1000, zero.policy = T)
+
+tm_shape(neighborhoods_data_for_log) + tm_fill("RESID_SER", style = "cont", midpoint = 0, palette = "-RdBu") +
+tm_shape(neighborhoods_data_for_log) + tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+tm_compass(position = c("right", "top")) +
+tm_scale_bar(position = c("left", "bottom")) +
+tm_layout(frame = FALSE, legend.title.size = 0.5, legend.text.size = 0.5)
+```
+```{r spatial_durbin_linear}
+modelSLX <- lmSLX(log10(tree_cover_percentage) ~ log10(pop_density) + log10(White) + log10(Black) + log10(Native) + log10(AAPI) + log10(Multiple) + log10(owned), data = neighborhoods_data_for_log, Residual_WeightMatrix)
+summary(modelSLX)
+
+IMPACTS_SLX <- impacts(modelSLX, tr = trMC, R=100)
+IMPACTS_SLX
+
+# extract the residuals for modelSLX object and dump back to original sf spatialdatafile object
+neighborhoods_data_for_log$RESID_SLX <- modelSLX$residuals
+# use Moran's I test using moran.mc() function
+moran.mc(neighborhoods_data_for_log$RESID_SLX, Residual_WeightMatrix, 1000, zero.policy = T)
 ```
 
 ```{r mgwr}
+# calculate the centroids from geometries
+neighborhoods_data_for_log <- st_centroid(neighborhoods_data_for_log)
+# insert coordinates into spatialdatafile note longitude column is X and latitude column is Y
+neighborhoods_data_for_log <- cbind(neighborhoods_data_for_log, st_coordinates(neighborhoods_data_for_log))
 
+BwG <- gwr.sel(log10(tree_cover_percentage) ~ log10(pop_density) + log10(White) + log10(Black) + log10(Native) + log10(AAPI) + log10(Multiple) + log10(owned), data = neighborhoods_data_for_log, coords = cbind(neighborhoods_data_for_log$X, neighborhoods_data_for_log$Y), adapt = TRUE)
+BwG
+
+```
+```{r mgwr_contd}
+# start timer to time how long it takes to run a gwr() on computer
+start.timer <- proc.time()
+
+# gwr() model. You need hatmatrix and se.fit specified as TRUE for testing statistical significance 
+gwr.model <- gwr(log10(tree_cover_percentage) ~ log10(pop_density) + log10(White) + log10(Black) + log10(Native) + log10(AAPI) + log10(Multiple) + log10(owned), data = neighborhoods_data_for_log, coords = cbind(neighborhoods_data_for_log$X, neighborhoods_data_for_log$Y), adapt=BwG, hatmatrix=TRUE, se.fit=TRUE)
+
+# end timer and calculate how it took for model to complete churning
+end.timer <- proc.time() - start.timer
+# report time taken
+end.timer
+
+gwr.model
+```
+```{r write_gwr_data, eval=FALSE}
+gwr.data <- as.data.frame(gwr.model$SDF)
+
+# save the output as a csv so you don't have to run the model again and use in the future!
+write.csv(gwr.data, file = "gwr_output.csv", row.names = FALSE)
+```
+```{r gwr_coefficients}
+treasure_island_extent <- st_bbox(c(xmin = -122.380388, ymin = 37.805822, xmax = -122.358244, ymax = 37.835112), crs = "EPSG:4326")
+treasure_island <- st_as_sfc(treasure_island_extent)
+
+# create neat spatial data frame by keeping first two columns
+census_result <- neighborhoods%>%
+  dplyr::select(., GEOID, geometry)
+
+treasure_island <- st_transform(treasure_island, st_crs(census_result))
+census_result <- st_difference(census_result, treasure_island)
+
+# insert coefficients into census_result object
+census_result$CoefLogPop <- gwr.data[,"log10.pop_density."]
+census_result$CoefLogWhite <- gwr.data[,"log10.White."]
+census_result$CoefLogBlack <- gwr.data[,"log10.Black."]
+census_result$CoefLogNative <- gwr.data[,"log10.Native."]
+census_result$CoefLogAAPI <- gwr.data[,"log10.AAPI."]
+census_result$CoefLogMultiple <- gwr.data[,"log10.Multiple."]
+census_result$CoefLogOwned <- gwr.data[,"log10.owned."]
+
+# insert standard errors into census_result object
+census_result$SELogPop <- gwr.data[,"log10.pop_density._se"]
+census_result$SELogWhite <- gwr.data[,"log10.White._se"]
+census_result$SELogBlack <- gwr.data[,"log10.Black._se"]
+census_result$SELogNative <- gwr.data[,"log10.Native._se"]
+census_result$SELogAAPI <- gwr.data[,"log10.AAPI._se"]
+census_result$SELogMultiple <- gwr.data[,"log10.Multiple._se"]
+census_result$SELogOwned <- gwr.data[,"log10.owned._se"]
+
+# insert localR2 estimates into lsoa_result object
+census_result$localR2 <- gwr.data[,"localR2"]
+```
+```{r gwr_r2}
+# map localR2 to examine model performance
+tm_shape(census_result) + tm_fill("localR2", title = "Adaptive: Local R2", style = "cont", midpoint = 0.5, palette = "Spectral") +
+    tm_shape(census_result) + tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+    tm_compass(position = c("right", "top")) +
+    tm_scale_bar(position = c("left", "bottom")) +
+    tm_layout(frame = FALSE, legend.title.size = 1, legend.text.size = 1)
+```
+
+```{r comparison}
+# Initialize an empty data frame
+model_comparison <- data.frame(
+  Model = character(),
+  R_squared = numeric(),
+  Morans_I = numeric(),
+  AIC = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Example data to fill in the data frame
+model_comparison <- rbind(model_comparison, data.frame(
+  Model = "Multivariable Linear Regression", 
+  R_squared = summary(modelMLR)$r.squared, 
+  Morans_I = lm.morantest(modelMLR, Residual_WeightMatrix, alternative = "two.sided")$estimate[[1]], 
+  AIC = AIC(modelMLR)
+))
+
+model_comparison <- rbind(model_comparison, data.frame(
+  Model = "Spatial Lag Regression", 
+  R_squared = NA, 
+  Morans_I = moran.test(neighborhoods_data_for_log$RESID_SLY, listw = Residual_WeightMatrix)$estimate[[1]], 
+  AIC = AIC(modelSLY)
+))
+
+model_comparison <- rbind(model_comparison, data.frame(
+  Model = "Spatial Error Regression", 
+  R_squared = NA, 
+  Morans_I = moran.test(neighborhoods_data_for_log$RESID_SER, listw = Residual_WeightMatrix)$estimate[[1]], 
+  AIC = AIC(modelSER)
+))
+
+model_comparison <- rbind(model_comparison, data.frame(
+  Model = "Spatial Durbin Linear", 
+  R_squared = NA, 
+  Morans_I = moran.test(neighborhoods_data_for_log$RESID_SLX, listw = Residual_WeightMatrix)$estimate[[1]], 
+  AIC = AIC(modelSLX)
+))
+
+model_comparison <- rbind(model_comparison, data.frame(
+  Model = "MGWR", 
+  R_squared = (1 - (gwr.model$results$rss / gwr.model$gTSS)), 
+  Morans_I = moran.test(log10(neighborhoods_data_for_log$tree_cover_percentage) - gwr.data$pred, listw = Residual_WeightMatrix)$estimate[[1]], 
+  AIC = gwr.model$results$AICh
+))
+
+# Convert numeric columns to the appropriate data type (if necessary)
+model_comparison$R_squared <- as.numeric(model_comparison$R_squared)
+model_comparison$Morans_I <- as.numeric(model_comparison$Morans_I)
+model_comparison$AIC <- as.numeric(model_comparison$AIC)
+
+# View the final data frame
+print(model_comparison)
+```
+```{r gwr_white}
+tm_shape(census_result) + 
+tm_fill("CoefLogWhite", title = "Coefficient: Log(White) [%]", style = "cont", midpoint = 0, palette = "RdBu") +
+tm_shape(census_result) + tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+tm_compass(position = c("right", "top")) +
+tm_scale_bar(position = c("left", "bottom")) +
+tm_layout(frame = FALSE, legend.title.size = 1, legend.text.size = 1)
+
+summary(census_result$CoefLogWhite)
+# compute t-score statistic
+census_result$tstatWhite <- census_result$CoefLogWhite / census_result$SELogWhite
+# create significance column with: "Reduction: Significant", "Not Significant", "Increase: Significant" 
+census_result$significant <- cut(census_result$tstatWhite,
+    breaks=c(min(census_result$tstatWhite), -2, 2, max(census_result$tstatWhite)),
+    labels=c("Reduction: Significant","Not Significant", "Increase: Significant"))
+
+
+tm_shape(census_result) + tm_fill("significant", title="", style = "cat", labels=c("Significant Reduction", "Not Significant", "Significant Increase"), palette = c("#D6604D", "#f2f2f2", "#2c8399"), legend.show = FALSE) +
+    tm_add_legend(
+    title="Percent White \nSignificance GWR",
+    type = "symbol",  # Use symbols for legend items (color boxes)
+    labels=c("Reduction: \nSignificant", "Not Significant", "Increase: \nSignificant"),
+    shape=15,
+    size=2,
+    col=c("#D6604D", "#f2f2f2", "#2c8399"))+
+    tm_shape(census_result) + tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+    tm_scale_bar(position = c("right", "bottom")) +
+    tm_compass(type = "arrow", position = c("left", "top"))+
+    tm_layout(frame = FALSE, legend.title.size = 2, legend.text.size = 1, legend.outside = TRUE)
+```
+```{r gwr_Black}
+tm_shape(census_result) + 
+tm_fill("CoefLogBlack", title = "Coefficient: Log(Black) [%]", style = "cont", midpoint = 0, palette = "RdBu") +
+tm_shape(census_result) + tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+tm_compass(position = c("right", "top")) +
+tm_scale_bar(position = c("left", "bottom")) +
+tm_layout(frame = FALSE, legend.title.size = 1, legend.text.size = 1)
+
+summary(census_result$CoefLogBlack)
+# compute t-score statistic
+census_result$tstatBlack <- census_result$CoefLogBlack / census_result$SELogBlack
+# create significance column with: "Reduction: Significant", "Not Significant", "Increase: Significant" 
+census_result$significant <- cut(census_result$tstatBlack,
+    breaks=c(min(census_result$tstatBlack), -2, 2, max(census_result$tstatBlack)),
+    labels=c("Reduction: Significant","Not Significant", "Increase: Significant"))
+
+
+tm_shape(census_result) + tm_fill("significant", title="", style = "cat", labels=c("Reduction: Significant", "Not Significant", "Increase: Significant"), palette = c("#D6604D", "#f2f2f2", "#2c8399"), legend.show = FALSE) +
+    tm_add_legend(
+    title="Percent Black \nSignificance MGWR",
+    type = "symbol",  # Use symbols for legend items (color boxes)
+    labels=c("Reduction: \nSignificant", "Not Significant", "Increase: \nSignificant"),
+    shape=15,
+    size=2,
+    col=c("#D6604D", "#f2f2f2", "#2c8399"))+
+    tm_shape(census_result) + tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+    tm_scale_bar(position = c("right", "bottom")) +
+    tm_compass(type = "arrow", position = c("left", "top"))+
+    tm_layout(frame = FALSE, legend.title.size = 2, legend.text.size = 1, legend.outside = TRUE)
+```
+```{r gwr_Native}
+tm_shape(census_result) + 
+tm_fill("CoefLogNative", title = "Coefficient: Log(Native) [%]", style = "cont", midpoint = 0, palette = "RdBu") +
+tm_shape(census_result) + tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+tm_compass(position = c("right", "top")) +
+tm_scale_bar(position = c("left", "bottom")) +
+tm_layout(frame = FALSE, legend.title.size = 1, legend.text.size = 1)
+
+summary(census_result$CoefLogNative)
+# compute t-score statistic
+census_result$tstatNative <- census_result$CoefLogNative / census_result$SELogNative
+# create significance column with: "Reduction: Significant", "Not Significant", "Increase: Significant" 
+census_result$significant <- cut(census_result$tstatNative,
+    breaks=c(min(census_result$tstatNative), -2, 2, max(census_result$tstatNative)),
+    labels=c("Reduction: Significant","Not Significant", "Increase: Significant"))
+
+
+tm_shape(census_result) + tm_fill("significant", title="", style = "cat", labels=c("Reduction: Significant", "Not Significant", "Increase: Significant"), palette = c("#D6604D", "#f2f2f2", "#2c8399"), legend.show = FALSE) +
+    tm_add_legend(
+    title="Percent Native \nSignificance MGWR",
+    type = "symbol",  # Use symbols for legend items (color boxes)
+    labels=c("Reduction: \nSignificant", "Not Significant", "Increase: \nSignificant"),
+    shape=15,
+    size=2,
+    col=c("#D6604D", "#f2f2f2", "#2c8399"))+
+    tm_shape(census_result) + tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+    tm_scale_bar(position = c("right", "bottom")) +
+    tm_compass(type = "arrow", position = c("left", "top"))+
+    tm_layout(frame = FALSE, legend.title.size = 2, legend.text.size = 1, legend.outside = TRUE)
+```
+```{r gwr_AAPI}
+tm_shape(census_result) + 
+tm_fill("CoefLogAAPI", title = "Coefficient: Log(Owned) [%]", style = "cont", midpoint = 0, palette = "RdBu") +
+tm_shape(census_result) + tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+tm_compass(position = c("right", "top")) +
+tm_scale_bar(position = c("left", "bottom")) +
+tm_layout(frame = FALSE, legend.title.size = 1, legend.text.size = 1)
+
+summary(census_result$CoefLogAAPI)
+# compute t-score statistic
+census_result$tstatAAPI <- census_result$CoefLogAAPI / census_result$SELogAAPI
+# create significance column with: "Reduction: Significant", "Not Significant", "Increase: Significant" 
+census_result$significant <- cut(census_result$tstatAAPI,
+    breaks=c(min(census_result$tstatAAPI), -2, 2, max(census_result$tstatAAPI)),
+    labels=c("Reduction: Significant","Not Significant", "Increase: Significant"))
+
+
+tm_shape(census_result) + tm_fill("significant", title="", style = "cat", labels=c("Significant Reduction", "Not Significant", "Significant Increase"), palette = c("#D6604D", "#f2f2f2", "#2c8399"), legend.show = FALSE) +
+    tm_add_legend(
+    title="Percent AAPI \nSignificance GWR",
+    type = "symbol",  # Use symbols for legend items (color boxes)
+    labels=c("Reduction: \nSignificant", "Not Significant", "Increase: \nSignificant"),
+    shape=15,
+    size=2,
+    col=c("#D6604D", "#f2f2f2", "#2c8399"))+
+    tm_shape(census_result) + tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+    tm_scale_bar(position = c("right", "bottom")) +
+    tm_compass(type = "arrow", position = c("left", "top"))+
+    tm_layout(frame = FALSE, legend.title.size = 2, legend.text.size = 1, legend.outside = TRUE)
+```
+```{r gwr_Multiple}
+tm_shape(census_result) + 
+tm_fill("CoefLogMultiple", title = "Coefficient: Log(Multiple) [%]", style = "cont", midpoint = 0, palette = "RdBu") +
+tm_shape(census_result) + tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+tm_compass(position = c("right", "top")) +
+tm_scale_bar(position = c("left", "bottom")) +
+tm_layout(frame = FALSE, legend.title.size = 1, legend.text.size = 1)
+
+summary(census_result$CoefLogMultiple)
+# compute t-score statistic
+census_result$tstatMultiple <- census_result$CoefLogMultiple / census_result$SELogMultiple
+# create significance column with: "Reduction: Significant", "Not Significant", "Increase: Significant" 
+census_result$significant <- cut(census_result$tstatMultiple,
+    breaks=c(min(census_result$tstatMultiple), -2, 2, max(census_result$tstatMultiple)),
+    labels=c("Reduction: Significant","Not Significant", "Increase: Significant"))
+
+
+tm_shape(census_result) + tm_fill("significant", title="", style = "cat", labels=c("Reduction: Significant", "Not Significant", "Increase: Significant"), palette = c("#D6604D", "#f2f2f2", "#2c8399"), legend.show = FALSE) +
+    tm_add_legend(
+    title="Percent Multiple \nSignificance MGWR",
+    type = "symbol",  # Use symbols for legend items (color boxes)
+    labels=c("Reduction: \nSignificant", "Not Significant", "Increase: \nSignificant"),
+    shape=15,
+    size=2,
+    col=c("#D6604D", "#f2f2f2", "#2c8399"))+
+    tm_shape(census_result) + tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+    tm_scale_bar(position = c("right", "bottom")) +
+    tm_compass(type = "arrow", position = c("left", "top"))+
+    tm_layout(frame = FALSE, legend.title.size = 2, legend.text.size = 1, legend.outside = TRUE)
+```
+```{r gwr_Owned}
+tm_shape(census_result) + 
+tm_fill("CoefLogOwned", title = "Coefficient: Log(Owned) [%]", style = "cont", midpoint = 0, palette = "RdBu") +
+tm_shape(census_result) + tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+tm_compass(position = c("right", "top")) +
+tm_scale_bar(position = c("left", "bottom")) +
+tm_layout(frame = FALSE, legend.title.size = 1, legend.text.size = 1)
+
+summary(census_result$CoefLogOwned)
+# compute t-score statistic
+census_result$tstatOwned <- census_result$CoefLogOwned / census_result$SELogOwned
+# create significance column with: "Reduction: Significant", "Not Significant", "Increase: Significant" 
+census_result$significant <- cut(census_result$tstatOwned,
+    breaks=c(min(census_result$tstatOwned), -2, 2, max(census_result$tstatOwned)),
+    labels=c("Reduction: Significant","Not Significant", "Increase: Significant"))
+
+
+tm_shape(census_result) + tm_fill("significant", title="", style = "cat", labels=c("Reduction: Significant", "Not Significant", "Increase: Significant"), palette = c("#D6604D", "#f2f2f2", "#2c8399"), legend.show = FALSE) +
+    tm_add_legend(
+    title="Percent Owned \nSignificance MGWR",
+    type = "symbol",  # Use symbols for legend items (color boxes)
+    labels=c("Reduction: \nSignificant", "Not Significant", "Increase: \nSignificant"),
+    shape=15,
+    size=2,
+    col=c("#D6604D", "#f2f2f2", "#2c8399"))+
+    tm_shape(census_result) + tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+    tm_scale_bar(position = c("right", "bottom")) +
+    tm_compass(type = "arrow", position = c("left", "top"))+
+    tm_layout(frame = FALSE, legend.title.size = 2, legend.text.size = 1, legend.outside = TRUE)
+```
+```{r gwr_pop_density}
+tm_shape(census_result) + 
+tm_fill("CoefLogPop", title = "Coefficient: Log(Pop) [%]", style = "cont", midpoint = 0, palette = "RdBu") +
+tm_shape(census_result) + tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+tm_compass(position = c("right", "top")) +
+tm_scale_bar(position = c("left", "bottom")) +
+tm_layout(frame = FALSE, legend.title.size = 1, legend.text.size = 1)
+
+summary(census_result$CoefLogPop)
+# compute t-score statistic
+census_result$tstatPop <- census_result$CoefLogPop / census_result$SELogPop
+# create significance column with: "Reduction: Significant", "Not Significant", "Increase: Significant" 
+census_result$significant <- cut(census_result$tstatPop,
+    breaks=c(min(census_result$tstatPop), -2, 2, max(census_result$tstatPop)),
+    labels=c("Reduction: Significant","Not Significant", "Increase: Significant"))
+
+
+tm_shape(census_result) + tm_fill("significant", title="", style = "cat", labels=c("Reduction: Significant", "Not Significant", "Increase: Significant"), palette = c("#D6604D", "#f2f2f2", "#2c8399"), legend.show = FALSE) +
+    tm_add_legend(
+    title="Pop Density \nSignificance MGWR",
+    type = "symbol",  # Use symbols for legend items (color boxes)
+    labels=c("Reduction: \nSignificant", "Not Significant", "Increase: \nSignificant"),
+    shape=15,
+    size=2,
+    col=c("#D6604D", "#f2f2f2", "#2c8399"))+
+    tm_shape(census_result) + tm_polygons(alpha = 0, border.alpha = 1, border.col = "black") +
+    tm_scale_bar(position = c("right", "bottom")) +
+    tm_compass(type = "arrow", position = c("left", "top"))+
+    tm_layout(frame = FALSE, legend.title.size = 2, legend.text.size = 1, legend.outside = TRUE)
 ```
